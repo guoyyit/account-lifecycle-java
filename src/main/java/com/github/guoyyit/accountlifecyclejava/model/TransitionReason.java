@@ -1,0 +1,17 @@
+package com.github.guoyyit.accountlifecyclejava.model;
+
+public enum TransitionReason {
+    CREATED,
+    DORMANCY_SCAN,
+    ACTIVITY_REPORTED,
+    CREDENTIAL_EXPIRED,
+    CREDENTIAL_RENEWED,
+    GRACE_TIMEOUT_RECYCLE,
+    DORMANT_BUFFER_RECYCLE,
+    ADMIN_DISABLED,
+    RECOVERY_VERIFIED,
+    RECOVERY_STARTED,
+    RECOVERY_FAILED,
+    ACCOUNT_EXPIRED,
+    REACTIVATED
+}
