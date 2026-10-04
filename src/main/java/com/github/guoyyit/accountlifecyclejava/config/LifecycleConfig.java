@@ -7,6 +7,7 @@ import com.github.guoyyit.accountlifecyclejava.engine.Clock;
 import com.github.guoyyit.accountlifecyclejava.engine.CredentialService;
 import com.github.guoyyit.accountlifecyclejava.engine.PolicyService;
 import com.github.guoyyit.accountlifecyclejava.engine.RecoveryService;
+import com.github.guoyyit.accountlifecyclejava.engine.SecureVerificationTokenGenerator;
 import com.github.guoyyit.accountlifecyclejava.engine.ScanCoordinator;
 import com.github.guoyyit.accountlifecyclejava.engine.StateMachine;
 import com.github.guoyyit.accountlifecyclejava.store.DurableLog;
@@ -81,16 +82,19 @@ public class LifecycleConfig {
 
     @Bean
     public CredentialService credentialService(DurableLog durableLog, LifecycleStore lifecycleStore,
-                                               StateMachine stateMachine, Clock lifecycleClock) {
-        return new CredentialService(durableLog, lifecycleStore, stateMachine, lifecycleClock);
+                                               StateMachine stateMachine, PolicyService policyService,
+                                               Clock lifecycleClock) {
+        return new CredentialService(durableLog, lifecycleStore, stateMachine, policyService,
+                lifecycleClock);
     }
 
     @Bean
     public RecoveryService recoveryService(DurableLog durableLog, LifecycleStore lifecycleStore,
                                            StateMachine stateMachine, PolicyService policyService,
-                                           Clock lifecycleClock) {
+                                           Clock lifecycleClock, LifecycleProperties properties) {
         return new RecoveryService(durableLog, lifecycleStore, stateMachine, policyService,
-                lifecycleClock);
+                lifecycleClock, new SecureVerificationTokenGenerator(),
+                properties.getDefaultVerificationTtl());
     }
 
     @Bean

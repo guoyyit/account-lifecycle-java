@@ -36,18 +36,20 @@ class AuditQueryTest {
         harness.scanCoordinator.scanAccount("a1");
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("a1").state());
 
-        harness.recoveryService.startRecovery("a1", "ar-1");
-        harness.recoveryService.verify("ar-1", false, "验证失败");
-        harness.recoveryService.startRecovery("a1", "ar-2");
-        harness.recoveryService.verify("ar-2", true, null);
-        harness.recoveryService.complete("ar-2");
+        com.github.guoyyit.accountlifecyclejava.model.RecoveryChallenge challenge =
+                harness.recoveryService.startRecovery("a1", "ar-1");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.github.guoyyit.accountlifecyclejava.lifecycle.RecoveryVerificationException.class,
+                () -> harness.recoveryService.verify("ar-1", "wrong-token"));
+        harness.recoveryService.verify("ar-1", challenge.verificationToken());
+        harness.recoveryService.complete("ar-1");
 
         List<AuditEntry> entries = harness.auditQueryService.byAccount("a1");
         List<String> types = entries.stream().map(AuditEntry::eventType).toList();
         assertTrue(types.contains("ACCOUNT_REGISTERED"));
         assertTrue(types.contains("STATE_CHANGED"));
         assertTrue(types.contains("RECOVERY_STARTED"));
-        assertTrue(types.contains("RECOVERY_FAILED"));
+        assertTrue(types.contains("RECOVERY_VERIFICATION_FAILED"));
         assertTrue(types.contains("RECOVERY_VERIFIED"));
         assertTrue(types.contains("RECOVERY_COMPLETED"));
 

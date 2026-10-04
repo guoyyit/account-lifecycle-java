@@ -6,6 +6,8 @@ public record PendingRecovery(
         RecoveryStatus status,
         long createdAtMillis,
         Long verifiedAtMillis,
-        String failReason
+        String failReason,
+        String verificationTokenHash,
+        Long verificationTokenExpiresAtMillis
 ) {
 }

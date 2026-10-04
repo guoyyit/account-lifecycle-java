@@ -96,8 +96,9 @@ class RestartRecoveryTest {
         harness.scanCoordinator.scanOnce();
         clock.advanceMillis(10);
         harness.scanCoordinator.scanOnce();
-        harness.recoveryService.startRecovery("p4", "req-p4");
-        harness.recoveryService.verify("req-p4", true, null);
+        com.github.guoyyit.accountlifecyclejava.model.RecoveryChallenge challenge =
+                harness.recoveryService.startRecovery("p4", "req-p4");
+        harness.recoveryService.verify("req-p4", challenge.verificationToken());
 
         harness.log.setCrashAfterFsync(t -> t == EventType.RECOVERY_COMPLETED);
         assertThrows(LifecycleException.class,

@@ -16,6 +16,7 @@ public class LifecycleProperties {
     private Duration defaultDormantBufferPeriod = Duration.ofDays(30);
     private Duration defaultAccountMaxLifetime = Duration.ZERO;
     private Duration defaultRecoveryPendingTtl = Duration.ofHours(24);
+    private Duration defaultVerificationTtl = Duration.ofMinutes(10);
 
     public boolean isEnabled() {
         return enabled;
@@ -87,5 +88,13 @@ public class LifecycleProperties {
 
     public void setDefaultRecoveryPendingTtl(Duration defaultRecoveryPendingTtl) {
         this.defaultRecoveryPendingTtl = defaultRecoveryPendingTtl;
+    }
+
+    public Duration getDefaultVerificationTtl() {
+        return defaultVerificationTtl;
+    }
+
+    public void setDefaultVerificationTtl(Duration defaultVerificationTtl) {
+        this.defaultVerificationTtl = defaultVerificationTtl;
     }
 }

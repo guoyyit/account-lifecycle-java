@@ -1,8 +1,10 @@
 package com.github.guoyyit.accountlifecyclejava.tests;
 
 import com.github.guoyyit.accountlifecyclejava.lifecycle.InvalidTransitionException;
+import com.github.guoyyit.accountlifecyclejava.lifecycle.RecoveryVerificationException;
 import com.github.guoyyit.accountlifecyclejava.model.AccountState;
 import com.github.guoyyit.accountlifecyclejava.model.PendingRecovery;
+import com.github.guoyyit.accountlifecyclejava.model.RecoveryChallenge;
 import com.github.guoyyit.accountlifecyclejava.model.RecoveryStatus;
 import com.github.guoyyit.accountlifecyclejava.model.TransitionReason;
 import org.junit.jupiter.api.Test;
@@ -12,7 +14,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RecoveryFlowTest {
@@ -44,16 +46,32 @@ class RecoveryFlowTest {
         assertThrows(InvalidTransitionException.class,
                 () -> harness.recoveryService.startRecovery("r1-active", "x"));
 
-        PendingRecovery started = harness.recoveryService.startRecovery("r1", "req-1");
-        assertEquals(RecoveryStatus.PENDING, started.status());
+        RecoveryChallenge challenge = harness.recoveryService.startRecovery("r1", "req-1");
+        assertEquals(RecoveryStatus.PENDING, challenge.recovery().status());
+        assertNotNull(challenge.verificationToken());
 
         assertThrows(InvalidTransitionException.class,
                 () -> harness.recoveryService.complete("req-1"));
 
-        PendingRecovery verified = harness.recoveryService.verify("req-1", true, null);
+        RecoveryVerificationException missing = assertThrows(RecoveryVerificationException.class,
+                () -> harness.recoveryService.verify("req-1", null));
+        assertEquals("RECOVERY_TOKEN_MISSING", missing.code());
+
+        RecoveryVerificationException blank = assertThrows(RecoveryVerificationException.class,
+                () -> harness.recoveryService.verify("req-1", "  "));
+        assertEquals("RECOVERY_TOKEN_MISSING", blank.code());
+
+        RecoveryVerificationException wrong = assertThrows(RecoveryVerificationException.class,
+                () -> harness.recoveryService.verify("req-1", "not-the-issued-token"));
+        assertEquals("RECOVERY_TOKEN_MISMATCH", wrong.code());
+        assertEquals(RecoveryStatus.PENDING, harness.store.getRecovery("req-1").status());
+
+        PendingRecovery verified = harness.recoveryService.verify("req-1",
+                challenge.verificationToken());
         assertEquals(RecoveryStatus.VERIFIED, verified.status());
 
-        PendingRecovery verifiedAgain = harness.recoveryService.verify("req-1", true, null);
+        PendingRecovery verifiedAgain = harness.recoveryService.verify("req-1",
+                challenge.verificationToken());
         assertEquals(RecoveryStatus.VERIFIED, verifiedAgain.status());
 
         PendingRecovery completed = harness.recoveryService.complete("req-1");
@@ -67,7 +85,7 @@ class RecoveryFlowTest {
     }
 
     @Test
-    void failedVerificationLeavesRecycledStateAndFailedRequest() {
+    void wrongTokenLeavesRecycledStateAndPendingRequest() {
         MutableClock clock = MutableClock.startAt(40_000L);
         LifecycleHarness harness = new LifecycleHarness(tempDir, clock,
                 LifecycleHarness.defaults(Duration.ofMillis(10), Duration.ofDays(1),
@@ -79,18 +97,22 @@ class RecoveryFlowTest {
         harness.scanCoordinator.scanAccount("r2");
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("r2").state());
 
-        harness.recoveryService.startRecovery("r2", "req-2");
-        PendingRecovery failed = harness.recoveryService.verify("req-2", false, "身份核验失败");
-        assertEquals(RecoveryStatus.FAILED, failed.status());
-        assertEquals("身份核验失败", failed.failReason());
+        RecoveryChallenge challenge = harness.recoveryService.startRecovery("r2", "req-2");
+        RecoveryVerificationException wrong = assertThrows(RecoveryVerificationException.class,
+                () -> harness.recoveryService.verify("req-2", "not-the-issued-token"));
+        assertEquals("RECOVERY_TOKEN_MISMATCH", wrong.code());
+        assertEquals(RecoveryStatus.PENDING, harness.store.getRecovery("req-2").status());
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("r2").state());
 
         assertThrows(InvalidTransitionException.class,
                 () -> harness.recoveryService.complete("req-2"));
 
-        PendingRecovery retry = harness.recoveryService.startRecovery("r2", "req-3");
-        assertEquals(RecoveryStatus.PENDING, retry.status());
-        assertNotEquals("req-2", retry.requestId());
+        PendingRecovery verified = harness.recoveryService.verify("req-2",
+                challenge.verificationToken());
+        assertEquals(RecoveryStatus.VERIFIED, verified.status());
+
+        RecoveryChallenge retry = harness.recoveryService.startRecovery("r2", "req-3");
+        assertEquals("req-2", retry.recovery().requestId());
     }
 
     @Test
@@ -105,11 +127,15 @@ class RecoveryFlowTest {
         clock.advanceMillis(10);
         harness.scanCoordinator.scanAccount("r3");
 
-        harness.recoveryService.startRecovery("r3", "req-ttl");
+        RecoveryChallenge stale = harness.recoveryService.startRecovery("r3", "req-ttl");
+        assertEquals(RecoveryStatus.PENDING, harness.store.getRecovery("req-ttl").status());
         clock.advanceMillis(100);
         harness.scanCoordinator.scanAccount("r3");
         assertEquals(RecoveryStatus.FAILED,
                 harness.store.getRecovery("req-ttl").status());
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("r3").state());
+
+        assertThrows(InvalidTransitionException.class,
+                () -> harness.recoveryService.verify("req-ttl", stale.verificationToken()));
     }
 }

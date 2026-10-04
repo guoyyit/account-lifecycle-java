@@ -54,9 +54,14 @@ public class LifecycleStore {
             case ACTIVITY_REPORTED -> applyActivity(event);
             case STATE_CHANGED -> applyStateChanged(event);
             case CREDENTIAL_UPDATED -> applyCredentialUpdated(event);
+            case CREDENTIAL_RENEWED -> applyCredentialRenewed(event);
+            case CREDENTIAL_RENEWAL_REJECTED -> {
+            }
             case POLICY_PUT -> applyPolicyPut(event);
             case RECOVERY_STARTED -> applyRecoveryStarted(event);
             case RECOVERY_VERIFIED -> applyRecoveryVerified(event);
+            case RECOVERY_VERIFICATION_FAILED -> {
+            }
             case RECOVERY_COMPLETED -> applyRecoveryCompleted(event);
             case RECOVERY_FAILED -> applyRecoveryFailed(event);
         }
@@ -93,6 +98,16 @@ public class LifecycleStore {
                 .filter(r -> r.status() == RecoveryStatus.PENDING
                         || r.status() == RecoveryStatus.VERIFIED)
                 .max(Comparator.comparingLong(PendingRecovery::createdAtMillis))
+                .orElse(null);
+    }
+
+    public PendingRecovery findRecoveryByTokenHash(String tokenHash) {
+        if (tokenHash == null) {
+            return null;
+        }
+        return recoveries.values().stream()
+                .filter(r -> tokenHash.equals(r.verificationTokenHash()))
+                .findFirst()
                 .orElse(null);
     }
 
@@ -149,6 +164,19 @@ public class LifecycleStore {
         holder.version = event.sequence();
     }
 
+    private void applyCredentialRenewed(Event event) {
+        Payloads.CredentialRenewed p =
+                JsonCodec.fromJson(event.payloadJson(), Payloads.CredentialRenewed.class);
+        AccountHolder holder = requireAccount(p.accountId());
+        holder.credentialExpiresAt = p.newExpiresAtMillis();
+        if (holder.state == AccountState.GRACE) {
+            holder.state = AccountState.ACTIVE;
+            holder.stateReason = TransitionReason.CREDENTIAL_RENEWED;
+            holder.stateEnteredAt = p.atMillis();
+        }
+        holder.version = event.sequence();
+    }
+
     private void applyPolicyPut(Event event) {
         Payloads.PolicyPut p = JsonCodec.fromJson(event.payloadJson(), Payloads.PolicyPut.class);
         policies.computeIfAbsent(p.group(), g -> new ArrayList<>())
@@ -159,7 +187,8 @@ public class LifecycleStore {
         Payloads.RecoveryStarted p =
                 JsonCodec.fromJson(event.payloadJson(), Payloads.RecoveryStarted.class);
         recoveries.put(p.requestId(), new PendingRecovery(p.requestId(), p.accountId(),
-                RecoveryStatus.PENDING, p.atMillis(), null, null));
+                RecoveryStatus.PENDING, p.atMillis(), null, null,
+                p.tokenHash(), p.tokenExpiresAtMillis()));
     }
 
     private void applyRecoveryVerified(Event event) {
@@ -167,7 +196,8 @@ public class LifecycleStore {
                 JsonCodec.fromJson(event.payloadJson(), Payloads.RecoveryVerified.class);
         PendingRecovery base = requireRecovery(p.requestId());
         recoveries.put(p.requestId(), new PendingRecovery(base.requestId(), base.accountId(),
-                RecoveryStatus.VERIFIED, base.createdAtMillis(), p.atMillis(), base.failReason()));
+                RecoveryStatus.VERIFIED, base.createdAtMillis(), p.atMillis(), base.failReason(),
+                base.verificationTokenHash(), base.verificationTokenExpiresAtMillis()));
     }
 
     private void applyRecoveryCompleted(Event event) {
@@ -176,7 +206,8 @@ public class LifecycleStore {
         PendingRecovery base = requireRecovery(p.requestId());
         Long verifiedAt = base.verifiedAtMillis() == null ? p.atMillis() : base.verifiedAtMillis();
         recoveries.put(p.requestId(), new PendingRecovery(base.requestId(), base.accountId(),
-                RecoveryStatus.COMPLETED, base.createdAtMillis(), verifiedAt, base.failReason()));
+                RecoveryStatus.COMPLETED, base.createdAtMillis(), verifiedAt, base.failReason(),
+                base.verificationTokenHash(), base.verificationTokenExpiresAtMillis()));
         AccountHolder holder = requireAccount(p.accountId());
         holder.state = p.restoredState();
         holder.stateReason = TransitionReason.RECOVERY_VERIFIED;
@@ -190,10 +221,11 @@ public class LifecycleStore {
         PendingRecovery base = recoveries.get(p.requestId());
         PendingRecovery merged = base != null ? base
                 : new PendingRecovery(p.requestId(), p.accountId(), RecoveryStatus.PENDING,
-                p.atMillis(), null, null);
+                p.atMillis(), null, null, null, null);
         recoveries.put(p.requestId(), new PendingRecovery(merged.requestId(), merged.accountId(),
                 RecoveryStatus.FAILED, merged.createdAtMillis(), merged.verifiedAtMillis(),
-                p.failReason()));
+                p.failReason(), merged.verificationTokenHash(),
+                merged.verificationTokenExpiresAtMillis()));
     }
 
     private PendingRecovery requireRecovery(String requestId) {

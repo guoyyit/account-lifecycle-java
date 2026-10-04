@@ -1,38 +1,56 @@
 package com.github.guoyyit.accountlifecyclejava.engine;
 
+import com.github.guoyyit.accountlifecyclejava.event.Event;
 import com.github.guoyyit.accountlifecyclejava.event.EventType;
 import com.github.guoyyit.accountlifecyclejava.event.JsonCodec;
 import com.github.guoyyit.accountlifecyclejava.event.Payloads;
 import com.github.guoyyit.accountlifecyclejava.lifecycle.InvalidTransitionException;
 import com.github.guoyyit.accountlifecyclejava.lifecycle.LifecycleException;
+import com.github.guoyyit.accountlifecyclejava.lifecycle.RecoveryVerificationException;
 import com.github.guoyyit.accountlifecyclejava.model.Account;
 import com.github.guoyyit.accountlifecyclejava.model.AccountState;
 import com.github.guoyyit.accountlifecyclejava.model.PendingRecovery;
+import com.github.guoyyit.accountlifecyclejava.model.RecoveryChallenge;
 import com.github.guoyyit.accountlifecyclejava.model.RecoveryStatus;
 import com.github.guoyyit.accountlifecyclejava.model.TransitionReason;
 import com.github.guoyyit.accountlifecyclejava.store.DurableLog;
 import com.github.guoyyit.accountlifecyclejava.store.LifecycleStore;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.HexFormat;
 import java.util.UUID;
 
 public class RecoveryService {
+
+    public static final String TOKEN_MISSING = "RECOVERY_TOKEN_MISSING";
+    public static final String TOKEN_MISMATCH = "RECOVERY_TOKEN_MISMATCH";
+    public static final String TOKEN_FOREIGN = "RECOVERY_TOKEN_FOREIGN";
+    public static final String TOKEN_EXPIRED = "RECOVERY_TOKEN_EXPIRED";
 
     private final DurableLog log;
     private final LifecycleStore store;
     private final StateMachine stateMachine;
     private final PolicyService policyService;
     private final Clock clock;
+    private final VerificationTokenGenerator tokenGenerator;
+    private final Duration verificationTtl;
 
     public RecoveryService(DurableLog log, LifecycleStore store, StateMachine stateMachine,
-                           PolicyService policyService, Clock clock) {
+                           PolicyService policyService, Clock clock,
+                           VerificationTokenGenerator tokenGenerator, Duration verificationTtl) {
         this.log = log;
         this.store = store;
         this.stateMachine = stateMachine;
         this.policyService = policyService;
         this.clock = clock;
+        this.tokenGenerator = tokenGenerator;
+        this.verificationTtl = verificationTtl;
     }
 
-    public PendingRecovery startRecovery(String accountId, String requestId) {
+    public RecoveryChallenge startRecovery(String accountId, String requestId) {
         synchronized (AccountService.lockFor(accountId)) {
             Account account = store.getAccount(accountId);
             if (account == null) {
@@ -48,25 +66,31 @@ public class RecoveryService {
                     if (!existing.accountId().equals(accountId)) {
                         throw new LifecycleException("恢复请求 ID 已被其它账号占用: " + requestId);
                     }
-                    return existing;
+                    return new RecoveryChallenge(existing, null,
+                            existing.verificationTokenExpiresAtMillis() == null ? 0L
+                                    : existing.verificationTokenExpiresAtMillis());
                 }
             }
             PendingRecovery open = store.findRecoveryByAccount(accountId);
             if (open != null) {
-                return open;
+                return new RecoveryChallenge(open, null,
+                        open.verificationTokenExpiresAtMillis() == null ? 0L
+                                : open.verificationTokenExpiresAtMillis());
             }
             String id = requestId == null || requestId.isBlank()
                     ? UUID.randomUUID().toString() : requestId;
             long now = clock.nowMillis();
             long ttl = policyService.effectivePolicy(account.group()).recoveryPendingTtl().toMillis();
-            Payloads.RecoveryStarted payload =
-                    new Payloads.RecoveryStarted(id, accountId, ttl, now);
+            String token = tokenGenerator.generate();
+            long tokenExpiresAt = now + verificationTtl.toMillis();
+            Payloads.RecoveryStarted payload = new Payloads.RecoveryStarted(id, accountId, ttl, now,
+                    hashToken(token), tokenExpiresAt);
             log.append(EventType.RECOVERY_STARTED, accountId, JsonCodec.toJson(payload));
-            return store.getRecovery(id);
+            return new RecoveryChallenge(store.getRecovery(id), token, tokenExpiresAt);
         }
     }
 
-    public PendingRecovery verify(String requestId, boolean passed, String failReason) {
+    public PendingRecovery verify(String requestId, String verificationToken) {
         PendingRecovery recovery = requireRecovery(requestId);
         synchronized (AccountService.lockFor(recovery.accountId())) {
             recovery = store.getRecovery(requestId);
@@ -78,19 +102,74 @@ public class RecoveryService {
                 throw new InvalidTransitionException("恢复请求已失败，不能再次验证: " + requestId);
             }
             long now = clock.nowMillis();
-            if (passed) {
-                Payloads.RecoveryVerified payload =
-                        new Payloads.RecoveryVerified(requestId, recovery.accountId(), now);
-                log.append(EventType.RECOVERY_VERIFIED, recovery.accountId(),
-                        JsonCodec.toJson(payload));
-            } else {
-                Payloads.RecoveryFailed payload = new Payloads.RecoveryFailed(requestId,
-                        recovery.accountId(), RecoveryStatus.FAILED,
-                        failReason == null ? "验证未通过" : failReason, now);
-                log.append(EventType.RECOVERY_FAILED, recovery.accountId(),
-                        JsonCodec.toJson(payload));
+            String tokenFailure = validateToken(recovery, verificationToken, now);
+            if (tokenFailure != null) {
+                throw new RecoveryVerificationException(tokenFailure,
+                        verificationFailureDetail(tokenFailure, requestId));
             }
+            Payloads.RecoveryVerified payload =
+                    new Payloads.RecoveryVerified(requestId, recovery.accountId(), now);
+            log.append(EventType.RECOVERY_VERIFIED, recovery.accountId(),
+                    JsonCodec.toJson(payload));
             return store.getRecovery(requestId);
+        }
+    }
+
+    private String validateToken(PendingRecovery recovery, String verificationToken, long now) {
+        if (verificationToken == null || verificationToken.isBlank()) {
+            auditVerificationFailure(recovery, TOKEN_MISSING, "未提交验证凭据", now);
+            return TOKEN_MISSING;
+        }
+        String presentedHash = hashToken(verificationToken);
+        PendingRecovery owner = store.findRecoveryByTokenHash(presentedHash);
+        if (owner != null && !owner.requestId().equals(recovery.requestId())) {
+            auditVerificationFailure(recovery, TOKEN_FOREIGN,
+                    "验证凭据属于其它恢复请求: " + owner.requestId(), now);
+            return TOKEN_FOREIGN;
+        }
+        if (!presentedHash.equals(recovery.verificationTokenHash())) {
+            auditVerificationFailure(recovery, TOKEN_MISMATCH, "验证凭据错误", now);
+            return TOKEN_MISMATCH;
+        }
+        Long expiresAt = recovery.verificationTokenExpiresAtMillis();
+        if (expiresAt == null || now >= expiresAt) {
+            auditVerificationFailure(recovery, TOKEN_EXPIRED,
+                    "验证凭据已过期（有效期至 " + expiresAt + "）", now);
+            return TOKEN_EXPIRED;
+        }
+        return null;
+    }
+
+    private void auditVerificationFailure(PendingRecovery recovery, String reason, String detail,
+                                          long now) {
+        Payloads.RecoveryVerificationFailed payload = new Payloads.RecoveryVerificationFailed(
+                recovery.requestId(), recovery.accountId(), reason, detail, now);
+        Event event = log.append(EventType.RECOVERY_VERIFICATION_FAILED, recovery.accountId(),
+                JsonCodec.toJson(payload));
+        if (TOKEN_EXPIRED.equals(reason)) {
+            Payloads.RecoveryFailed failed = new Payloads.RecoveryFailed(recovery.requestId(),
+                    recovery.accountId(), RecoveryStatus.FAILED, "验证凭据已过期", now);
+            log.append(EventType.RECOVERY_FAILED, recovery.accountId(), JsonCodec.toJson(failed));
+        }
+    }
+
+    private static String verificationFailureDetail(String reason, String requestId) {
+        return switch (reason) {
+            case TOKEN_MISSING -> "恢复请求缺少验证凭据: " + requestId;
+            case TOKEN_MISMATCH -> "恢复请求的验证凭据缺失或错误: " + requestId;
+            case TOKEN_FOREIGN -> "验证凭据属于其它恢复请求，不能用于: " + requestId;
+            case TOKEN_EXPIRED -> "恢复请求的验证凭据已过期: " + requestId;
+            default -> "恢复验证失败: " + requestId;
+        };
+    }
+
+    public static String hashToken(String token) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(token.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new LifecycleException("无法计算验证凭据摘要", e);
         }
     }
 

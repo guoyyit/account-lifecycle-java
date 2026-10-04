@@ -13,6 +13,7 @@ import com.github.guoyyit.accountlifecyclejava.model.AuditEntry;
 import com.github.guoyyit.accountlifecyclejava.model.AuditQuery;
 import com.github.guoyyit.accountlifecyclejava.model.PendingRecovery;
 import com.github.guoyyit.accountlifecyclejava.model.Policy;
+import com.github.guoyyit.accountlifecyclejava.model.RecoveryChallenge;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -89,16 +90,16 @@ public class LifecycleController {
     public Map<String, Object> startRecovery(@PathVariable String id,
                                              @RequestBody(required = false) Map<String, Object> request) {
         String requestId = request == null ? null : (String) request.get("requestId");
-        PendingRecovery recovery = recoveryService.startRecovery(id, requestId);
-        return toRecoveryView(recovery);
+        RecoveryChallenge challenge = recoveryService.startRecovery(id, requestId);
+        return toRecoveryView(challenge);
     }
 
     @PostMapping("/recoveries/{requestId}/verification")
     public Map<String, Object> verifyRecovery(@PathVariable String requestId,
-                                              @RequestBody Map<String, Object> request) {
-        boolean passed = Boolean.TRUE.equals(request.get("passed"));
-        String failReason = (String) request.get("failReason");
-        return toRecoveryView(recoveryService.verify(requestId, passed, failReason));
+                                              @RequestBody(required = false) Map<String, Object> request) {
+        String verificationToken = request == null ? null
+                : (String) request.get("verificationToken");
+        return toRecoveryView(recoveryService.verify(requestId, verificationToken));
     }
 
     @PostMapping("/recoveries/{requestId}/completion")
@@ -201,7 +202,8 @@ public class LifecycleController {
         return view;
     }
 
-    private static Map<String, Object> toRecoveryView(PendingRecovery recovery) {
+    private static Map<String, Object> toRecoveryView(RecoveryChallenge challenge) {
+        PendingRecovery recovery = challenge.recovery();
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("requestId", recovery.requestId());
         view.put("accountId", recovery.accountId());
@@ -209,7 +211,15 @@ public class LifecycleController {
         view.put("createdAtMillis", recovery.createdAtMillis());
         view.put("verifiedAtMillis", recovery.verifiedAtMillis());
         view.put("failReason", recovery.failReason());
+        view.put("verificationToken", challenge.verificationToken());
+        view.put("verificationTokenExpiresAtMillis", challenge.tokenExpiresAtMillis());
         return view;
+    }
+
+    private static Map<String, Object> toRecoveryView(PendingRecovery recovery) {
+        return toRecoveryView(new RecoveryChallenge(recovery, null,
+                recovery.verificationTokenExpiresAtMillis() == null
+                        ? 0L : recovery.verificationTokenExpiresAtMillis()));
     }
 
     private static Map<String, Object> toPolicyView(Policy policy) {

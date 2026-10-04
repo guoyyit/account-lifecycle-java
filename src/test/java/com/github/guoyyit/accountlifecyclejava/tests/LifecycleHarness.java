@@ -8,12 +8,14 @@ import com.github.guoyyit.accountlifecyclejava.engine.PolicyService;
 import com.github.guoyyit.accountlifecyclejava.engine.RecoveryService;
 import com.github.guoyyit.accountlifecyclejava.engine.ScanCoordinator;
 import com.github.guoyyit.accountlifecyclejava.engine.StateMachine;
+import com.github.guoyyit.accountlifecyclejava.engine.VerificationTokenGenerator;
 import com.github.guoyyit.accountlifecyclejava.store.DurableLog;
 import com.github.guoyyit.accountlifecyclejava.store.LifecycleStore;
 import com.github.guoyyit.accountlifecyclejava.store.StoreRecovery;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class LifecycleHarness {
 
@@ -29,6 +31,17 @@ public class LifecycleHarness {
     public final RecoveryService recoveryService;
     public final ScanCoordinator scanCoordinator;
     public final AuditQueryService auditQueryService;
+    public final VerificationTokenGenerator tokenGenerator;
+
+    public static final class DeterministicTokenGenerator implements VerificationTokenGenerator {
+        private final AtomicLong sequence = new AtomicLong();
+        private final String prefix = "verify-token-" + java.util.UUID.randomUUID() + "-";
+
+        @Override
+        public String generate() {
+            return prefix + sequence.incrementAndGet();
+        }
+    }
 
     public LifecycleHarness(Path dir, MutableClock clock, PolicyService.Defaults defaults) {
         this.dir = dir;
@@ -42,8 +55,10 @@ public class LifecycleHarness {
         this.policyService.seedDefaults();
         this.accountService = new AccountService(log, store, stateMachine, policyService, clock);
         this.activityService = new ActivityService(log, store, stateMachine, clock);
-        this.credentialService = new CredentialService(log, store, stateMachine, clock);
-        this.recoveryService = new RecoveryService(log, store, stateMachine, policyService, clock);
+        this.credentialService = new CredentialService(log, store, stateMachine, policyService, clock);
+        this.tokenGenerator = new DeterministicTokenGenerator();
+        this.recoveryService = new RecoveryService(log, store, stateMachine, policyService, clock,
+                tokenGenerator, Duration.ofMinutes(10));
         this.scanCoordinator = new ScanCoordinator(log, store, stateMachine, policyService,
                 recoveryService, clock);
         this.auditQueryService = new AuditQueryService(log);
