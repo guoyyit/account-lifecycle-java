@@ -9,9 +9,11 @@ import com.github.guoyyit.accountlifecyclejava.lifecycle.LifecycleException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -33,7 +35,11 @@ public class DurableLog {
             if (Files.notExists(this.file)) {
                 Files.createFile(this.file);
             }
-            this.sequence = readAll().stream().mapToLong(Event::sequence).max().orElse(0L);
+            Scan scan = scanValidPrefix();
+            if (scan.truncatedAtBytes() >= 0) {
+                truncateTo(scan.truncatedAtBytes());
+            }
+            this.sequence = scan.events().stream().mapToLong(Event::sequence).max().orElse(0L);
         } catch (IOException e) {
             throw new UncheckedIOException("无法初始化持久日志: " + directory, e);
         }
@@ -67,13 +73,7 @@ public class DurableLog {
 
     public List<Event> readAll() {
         try {
-            if (Files.notExists(file)) {
-                return List.of();
-            }
-            return Files.readAllLines(file).stream()
-                    .filter(l -> !l.isBlank())
-                    .map(EventCodec::decode)
-                    .toList();
+            return scanValidPrefix().events();
         } catch (IOException e) {
             throw new UncheckedIOException("持久日志读取失败", e);
         }
@@ -98,5 +98,57 @@ public class DurableLog {
     public synchronized void clearFaults() {
         this.crashBeforeFsync = null;
         this.crashAfterFsync = null;
+    }
+
+    private record Scan(List<Event> events, long truncatedAtBytes) {
+    }
+
+    private Scan scanValidPrefix() throws IOException {
+        if (Files.notExists(file)) {
+            return new Scan(List.of(), -1L);
+        }
+        byte[] bytes = Files.readAllBytes(file);
+        List<Event> events = new ArrayList<>();
+        int validEnd = 0;
+        int pos = 0;
+        long truncatedAt = -1L;
+        while (pos < bytes.length) {
+            int lineEnd = pos;
+            while (lineEnd < bytes.length && bytes[lineEnd] != (byte) '\n') {
+                lineEnd++;
+            }
+            boolean terminated = lineEnd < bytes.length;
+            int contentEnd = lineEnd;
+            if (contentEnd > pos && bytes[contentEnd - 1] == (byte) '\r') {
+                contentEnd--;
+            }
+            String line = new String(bytes, pos, contentEnd - pos, StandardCharsets.UTF_8);
+            if (line.isBlank()) {
+                pos = terminated ? lineEnd + 1 : lineEnd;
+                continue;
+            }
+            if (!terminated) {
+                truncatedAt = validEnd;
+                break;
+            }
+            Event event;
+            try {
+                event = EventCodec.decode(line);
+            } catch (LifecycleException corrupt) {
+                truncatedAt = validEnd;
+                break;
+            }
+            events.add(event);
+            validEnd = lineEnd + 1;
+            pos = lineEnd + 1;
+        }
+        return new Scan(events, truncatedAt);
+    }
+
+    private void truncateTo(long length) throws IOException {
+        try (var channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
+            channel.truncate(length);
+            channel.force(true);
+        }
     }
 }

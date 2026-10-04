@@ -96,8 +96,8 @@ class RestartRecoveryTest {
         harness.scanCoordinator.scanOnce();
         clock.advanceMillis(10);
         harness.scanCoordinator.scanOnce();
-        harness.recoveryService.startRecovery("p4", "req-p4");
-        harness.recoveryService.verify("req-p4", true, null);
+        var started = harness.recoveryService.startRecovery("p4", "req-p4");
+        harness.recoveryService.verify("req-p4", started.verificationToken());
 
         harness.log.setCrashAfterFsync(t -> t == EventType.RECOVERY_COMPLETED);
         assertThrows(LifecycleException.class,

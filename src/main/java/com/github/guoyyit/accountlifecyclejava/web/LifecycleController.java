@@ -95,10 +95,9 @@ public class LifecycleController {
 
     @PostMapping("/recoveries/{requestId}/verification")
     public Map<String, Object> verifyRecovery(@PathVariable String requestId,
-                                              @RequestBody Map<String, Object> request) {
-        boolean passed = Boolean.TRUE.equals(request.get("passed"));
-        String failReason = (String) request.get("failReason");
-        return toRecoveryView(recoveryService.verify(requestId, passed, failReason));
+                                              @RequestBody(required = false) Map<String, Object> request) {
+        String token = request == null ? null : (String) request.get("token");
+        return toRecoveryView(recoveryService.verify(requestId, token));
     }
 
     @PostMapping("/recoveries/{requestId}/completion")
@@ -209,6 +208,8 @@ public class LifecycleController {
         view.put("createdAtMillis", recovery.createdAtMillis());
         view.put("verifiedAtMillis", recovery.verifiedAtMillis());
         view.put("failReason", recovery.failReason());
+        view.put("verificationToken", recovery.verificationToken());
+        view.put("tokenExpiresAtMillis", recovery.tokenExpiresAtMillis());
         return view;
     }
 

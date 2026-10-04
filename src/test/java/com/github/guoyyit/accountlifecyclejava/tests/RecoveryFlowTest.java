@@ -1,6 +1,7 @@
 package com.github.guoyyit.accountlifecyclejava.tests;
 
 import com.github.guoyyit.accountlifecyclejava.lifecycle.InvalidTransitionException;
+import com.github.guoyyit.accountlifecyclejava.lifecycle.VerificationFailedException;
 import com.github.guoyyit.accountlifecyclejava.model.AccountState;
 import com.github.guoyyit.accountlifecyclejava.model.PendingRecovery;
 import com.github.guoyyit.accountlifecyclejava.model.RecoveryStatus;
@@ -50,10 +51,12 @@ class RecoveryFlowTest {
         assertThrows(InvalidTransitionException.class,
                 () -> harness.recoveryService.complete("req-1"));
 
-        PendingRecovery verified = harness.recoveryService.verify("req-1", true, null);
+        PendingRecovery verified = harness.recoveryService.verify("req-1",
+                started.verificationToken());
         assertEquals(RecoveryStatus.VERIFIED, verified.status());
 
-        PendingRecovery verifiedAgain = harness.recoveryService.verify("req-1", true, null);
+        PendingRecovery verifiedAgain = harness.recoveryService.verify("req-1",
+                started.verificationToken());
         assertEquals(RecoveryStatus.VERIFIED, verifiedAgain.status());
 
         PendingRecovery completed = harness.recoveryService.complete("req-1");
@@ -79,10 +82,19 @@ class RecoveryFlowTest {
         harness.scanCoordinator.scanAccount("r2");
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("r2").state());
 
-        harness.recoveryService.startRecovery("r2", "req-2");
-        PendingRecovery failed = harness.recoveryService.verify("req-2", false, "身份核验失败");
+        PendingRecovery started = harness.recoveryService.startRecovery("r2", "req-2");
+
+        assertThrows(VerificationFailedException.class,
+                () -> harness.recoveryService.verify("req-2", "not-the-issued-token"));
+        assertEquals(RecoveryStatus.PENDING, harness.store.getRecovery("req-2").status());
+        assertEquals(AccountState.RECYCLED, harness.store.getAccount("r2").state());
+
+        clock.advanceMillis(100);
+        assertThrows(VerificationFailedException.class,
+                () -> harness.recoveryService.verify("req-2", started.verificationToken()));
+        PendingRecovery failed = harness.store.getRecovery("req-2");
         assertEquals(RecoveryStatus.FAILED, failed.status());
-        assertEquals("身份核验失败", failed.failReason());
+        assertEquals("验证凭据已过期", failed.failReason());
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("r2").state());
 
         assertThrows(InvalidTransitionException.class,

@@ -83,7 +83,7 @@ public class AccountService {
         return account;
     }
 
-    static Object lockFor(String accountId) {
+    public static Object lockFor(String accountId) {
         return ("acct:" + accountId).intern();
     }
 }

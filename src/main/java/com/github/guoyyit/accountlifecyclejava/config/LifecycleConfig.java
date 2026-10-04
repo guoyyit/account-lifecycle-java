@@ -81,8 +81,8 @@ public class LifecycleConfig {
 
     @Bean
     public CredentialService credentialService(DurableLog durableLog, LifecycleStore lifecycleStore,
-                                               StateMachine stateMachine, Clock lifecycleClock) {
-        return new CredentialService(durableLog, lifecycleStore, stateMachine, lifecycleClock);
+                                               PolicyService policyService, Clock lifecycleClock) {
+        return new CredentialService(durableLog, lifecycleStore, policyService, lifecycleClock);
     }
 
     @Bean

@@ -42,7 +42,7 @@ public class LifecycleHarness {
         this.policyService.seedDefaults();
         this.accountService = new AccountService(log, store, stateMachine, policyService, clock);
         this.activityService = new ActivityService(log, store, stateMachine, clock);
-        this.credentialService = new CredentialService(log, store, stateMachine, clock);
+        this.credentialService = new CredentialService(log, store, policyService, clock);
         this.recoveryService = new RecoveryService(log, store, stateMachine, policyService, clock);
         this.scanCoordinator = new ScanCoordinator(log, store, stateMachine, policyService,
                 recoveryService, clock);

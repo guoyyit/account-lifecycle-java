@@ -3,6 +3,8 @@ package com.github.guoyyit.accountlifecyclejava.tests;
 import com.github.guoyyit.accountlifecyclejava.model.AccountState;
 import com.github.guoyyit.accountlifecyclejava.model.AuditEntry;
 import com.github.guoyyit.accountlifecyclejava.model.AuditQuery;
+import com.github.guoyyit.accountlifecyclejava.lifecycle.VerificationFailedException;
+import com.github.guoyyit.accountlifecyclejava.model.PendingRecovery;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -11,6 +13,7 @@ import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuditQueryTest {
@@ -37,9 +40,13 @@ class AuditQueryTest {
         assertEquals(AccountState.RECYCLED, harness.store.getAccount("a1").state());
 
         harness.recoveryService.startRecovery("a1", "ar-1");
-        harness.recoveryService.verify("ar-1", false, "验证失败");
+        PendingRecovery ar1 = harness.store.getRecovery("ar-1");
+        clock.advanceMillis(3_600_000L);
+        assertThrows(VerificationFailedException.class,
+                () -> harness.recoveryService.verify("ar-1", ar1.verificationToken()));
         harness.recoveryService.startRecovery("a1", "ar-2");
-        harness.recoveryService.verify("ar-2", true, null);
+        harness.recoveryService.verify("ar-2",
+                harness.store.getRecovery("ar-2").verificationToken());
         harness.recoveryService.complete("ar-2");
 
         List<AuditEntry> entries = harness.auditQueryService.byAccount("a1");
